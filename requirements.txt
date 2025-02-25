@@ -94,7 +94,6 @@ keystonemiddleware==10.8.0
 kiwisolver==1.4.7
 kombu==5.4.2
 logutils==0.3.5
-magnum==17.0.0
 Mako==1.3.8
 mangum==0.17.0
 markdown-it-py==3.0.0
