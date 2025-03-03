@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Upload PDFs</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        .container {
+            border: 1px solid #ddd;
+            padding: 20px;
+            border-radius: 5px;
+        }
+        .file-input {
+            margin-bottom: 15px;
+        }
+        .upload-btn {
+            background-color: #4CAF50;
+            color: white;
+            padding: 10px 15px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+        .upload-btn:hover {
+            background-color: #45a049;
+        }
+        .progress-container {
+            margin-top: 20px;
+        }
+        .progress-item {
+            margin-bottom: 10px;
+        }
+        .progress-bar {
+            width: 100%;
+            background-color: #f3f3f3;
+            border-radius: 5px;
+            margin-top: 5px;
+        }
+        .progress-fill {
+            height: 20px;
+            background-color: #4CAF50;
+            border-radius: 5px;
+            width: 0%;
+            transition: width 0.3s;
+        }
+        .status {
+            margin-top: 5px;
+            font-size: 14px;
+        }
+        .error-message {
+            color: red;
+            margin-top: 10px;
+            font-weight: bold;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>PDF Upload Tool</h1>
+        <div class="file-input">
+            <input type="file" id="pdf1" multiple accept=".pdf">
+            <p><small>Select multiple PDFs to upload</small></p>
+        </div>
+        <button class="upload-btn" id="uploadButton" onclick="uploadPdfs()">Upload PDFs</button>
+        
+        <div class="error-message" id="errorMessage"></div>
+        <div class="progress-container" id="progressContainer"></div>
+    </div>
+
+    <script>
+        // Original API endpoint
+       const ORIGINAL_API_ENDPOINT = 'https://jh5rn1tel1.execute-api.eu-north-1.amazonaws.com/dev/pdfupload';
+        //const ORIGINAL_API_ENDPOINT = 'https://jolfhsq7lnilp2rtj7ffc7vs7y0suget.lambda-url.eu-north-1.on.aws';
+        // Use a CORS proxy to bypass CORS restrictions
+        // Free public CORS proxy options (choose one):
+        const CORS_PROXY = 'https://corsproxy.io/?';
+        // const CORS_PROXY = 'https://cors-anywhere.herokuapp.com/';
+        // const CORS_PROXY = 'https://api.allorigins.win/raw?url=';
+        
+        // Actual endpoint we'll use with proxy
+        const PRESIGNED_URL_ENDPOINT = CORS_PROXY + encodeURIComponent(ORIGINAL_API_ENDPOINT);
+        
+        // Function to display error messages
+        function showError(message) {
+            const errorElement = document.getElementById('errorMessage');
+            errorElement.textContent = message;
+            console.error(message);
+        }
+        
+        // Function to clear error messages
+        function clearError() {
+            const errorElement = document.getElementById('errorMessage');
+            errorElement.textContent = '';
+        }
+        
+        // Create a progress element for a file
+        function createProgressElement(fileName) {
+            const progressContainer = document.getElementById('progressContainer');
+            
+            const progressItem = document.createElement('div');
+            progressItem.className = 'progress-item';
+            progressItem.id = `progress-${fileName.replace(/\s+/g, '_')}`;
+            
+            const fileNameElement = document.createElement('div');
+            fileNameElement.textContent = fileName;
+            
+            const progressBar = document.createElement('div');
+            progressBar.className = 'progress-bar';
+            
+            const progressFill = document.createElement('div');
+            progressFill.className = 'progress-fill';
+            progressBar.appendChild(progressFill);
+            
+            const status = document.createElement('div');
+            status.className = 'status';
+            status.textContent = 'Preparing...';
+            
+            progressItem.appendChild(fileNameElement);
+            progressItem.appendChild(progressBar);
+            progressItem.appendChild(status);
+            
+            progressContainer.appendChild(progressItem);
+            
+            return {
+                updateProgress: (percent) => {
+                    progressFill.style.width = `${percent}%`;
+                },
+                updateStatus: (message) => {
+                    status.textContent = message;
+                }
+            };
+        }
+        
+        // Upload a single file using presigned URL with mode: 'no-cors' option
+        async function uploadFileWithPresignedUrl(file, presignedUrl, progressTracker) {
+            try {
+                progressTracker.updateStatus('Uploading...');
+                progressTracker.updateProgress(25);
+                
+                // For S3 presigned URLs, we need to use the direct URL without the CORS proxy
+                const response = await fetch(presignedUrl, {
+                    method: 'PUT',
+                    headers: {
+                        'Content-Type': 'application/pdf',
+                    },
+                    mode: 'cors', // Try with regular CORS first
+                    body: file,
+                });
+                
+                progressTracker.updateProgress(100);
+                progressTracker.updateStatus('Upload complete');
+                return true;
+            } catch (error) {
+                console.error(`Error uploading ${file.name}:`, error);
+                
+                // If the regular upload fails, try with no-cors mode
+                // Note: This will give an opaque response which we can't inspect
+                try {
+                    progressTracker.updateStatus('Retrying with alternative method...');
+                    
+                    await fetch(presignedUrl, {
+                        method: 'PUT',
+                        headers: {
+                            'Content-Type': 'application/pdf',
+                        },
+                        mode: 'no-cors', // Try with no-cors as a fallback
+                        body: file,
+                    });
+                    
+                    // Since we can't check the response with no-cors,
+                    // we'll assume it worked if no exception was thrown
+                    progressTracker.updateProgress(100);
+                    progressTracker.updateStatus('Upload likely complete (opaque response)');
+                    return true;
+                } catch (retryError) {
+                    progressTracker.updateStatus(`Error: ${error.message}. Retry also failed.`);
+                    console.error(`Retry error uploading ${file.name}:`, retryError);
+                    return false;
+                }
+            }
+        }
+        
+        // Main upload function using presigned URLs
+        async function uploadPdfs() {
+            const uploadButton = document.getElementById('uploadButton');
+            const fileInput = document.getElementById('pdf1');
+            const files = fileInput.files;
+            
+            // Clear previous errors
+            clearError();
+            
+            if (files.length === 0) {
+                showError('Please select at least one PDF file to upload.');
+                return;
+            }
+            
+            // Clear previous progress
+            document.getElementById('progressContainer').innerHTML = '';
+            
+            // Disable upload button during upload
+            uploadButton.disabled = true;
+            uploadButton.textContent = 'Uploading...';
+            
+            try {
+                // Create array of file names for request
+                const pdfNames = Array.from(files).map(file => file.name);
+                
+                // Create progress trackers for each file
+                const progressTrackers = {};
+                pdfNames.forEach(name => {
+                    progressTrackers[name] = createProgressElement(name);
+                    progressTrackers[name].updateStatus('Requesting upload URL...');
+                });
+                
+                // Request presigned URLs with error handling
+                let response;
+                try {
+                    response = await fetch(PRESIGNED_URL_ENDPOINT, {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'Origin': window.location.origin
+                        },
+                        body: JSON.stringify({ pdfs: pdfNames }),
+                    });
+                } catch (fetchError) {
+                    throw new Error(`Failed to connect to server: ${fetchError.message}. This could be due to CORS restrictions or network issues.`);
+                }
+                
+                if (!response.ok) {
+                    const errorText = await response.text();
+                    throw new Error(`Server responded with error (${response.status}): ${errorText || response.statusText}`);
+                }
+                
+                // Get presigned URLs from response
+                const presignedUrls = await response.json();
+                
+                if (!Array.isArray(presignedUrls) || presignedUrls.length !== files.length) {
+                    throw new Error("Invalid response from server: Expected array of presigned URLs matching the number of files");
+                }
+                
+                // Upload each file with its presigned URL
+                const uploadPromises = presignedUrls.map((url, index) => {
+                    const file = files[index];
+                    const tracker = progressTrackers[file.name];
+                    return uploadFileWithPresignedUrl(file, url, tracker);
+                });
+                
+                // Wait for all uploads to complete
+                const results = await Promise.all(uploadPromises);
+                const allSuccessful = results.every(result => result === true);
+                
+                if (allSuccessful) {
+                    console.log("All files uploaded successfully.");
+                } else {
+                    showError("Some files failed to upload. Check individual file statuses for details.");
+                }
+                
+            } catch (error) {
+                console.error("Upload process failed:", error);
+                showError(`Upload process failed: ${error.message}`);
+            } finally {
+                uploadButton.disabled = false;
+                uploadButton.textContent = 'Upload PDFs';
+            }
+        }
+    </script>
+</body>
+</html>
